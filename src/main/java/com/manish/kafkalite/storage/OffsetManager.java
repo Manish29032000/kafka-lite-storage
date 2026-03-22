@@ -7,9 +7,13 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class OffsetManager {
 
-    private final AtomicLong offset = new AtomicLong(0);            // Starts from 0
+    private final AtomicLong offset;
+
+    public OffsetManager(long initialOffset) {
+        this.offset = new AtomicLong(initialOffset);
+    }
 
     public long nextOffset() {
-        return offset.getAndIncrement();                        // Give next number(starts from 0 -> 1 -> 2) and increase
+        return offset.getAndIncrement();
     }
 }
