@@ -187,6 +187,19 @@ public class LogSegment implements AutoCloseable {
     public void close() throws IOException {
         fileChannel.close();
     }
+
+    public long getPositionForOffset(long offset) {
+        Long pos = index.get(offset);
+        return pos != null ? pos : -1;
+    }
+
+    public long getFileSize() throws IOException {
+        return fileChannel.size();
+    }
+
+    public java.nio.channels.FileChannel getFileChannel() {
+        return fileChannel;
+    }
 }
 
 /*
