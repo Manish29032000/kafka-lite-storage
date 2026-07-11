@@ -6,6 +6,10 @@ import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.zip.CRC32;
+import java.util.Map;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.concurrent.ConcurrentSkipListMap;
 
 /*
 Writes messages to disk, and Reads messages from disk
@@ -22,6 +26,7 @@ public class LogSegment implements AutoCloseable {
     private final OffsetManager offsetManager;            // gives message numbers (0,1,2...)
 
     private static final int HEADER_SIZE = 16;
+    private final ConcurrentSkipListMap<Long, Long> index = new ConcurrentSkipListMap<>();
     /**
      * Initializes the log segment by opening/creating the log file.
      */
@@ -60,112 +65,114 @@ public class LogSegment implements AutoCloseable {
      * @param payload message data
      * @return assigned offset
      */
-    public synchronized long append(byte[] payload) throws IOException {      // Write one(synchronized) message to file
+    public synchronized long append(byte[] payload) throws IOException {
+        long offset = offsetManager.nextOffset();
+        Message message = new Message(offset, payload);
+        byte[] bytes = serializer.serialize(message);
+        ByteBuffer buffer = ByteBuffer.wrap(bytes);
 
-        long offset = offsetManager.nextOffset();   // get next offset i.e msg-0 → offset 0, msg-1 → offset 1
-
-        Message message = new Message(offset, payload);   // Create Message
-
-        byte[] bytes = serializer.serialize(message);   // Serialize it([offset][size][crc][payload])
-
-        ByteBuffer buffer = ByteBuffer.wrap(bytes);    // Prepare for writing to file
+        // Capture position before writing
+        long writePosition = fileChannel.position();
 
         while (buffer.hasRemaining()) {
-            fileChannel.write(buffer);                  // Write to file i.e. Put bytes into file (at the end)
+            fileChannel.write(buffer);
         }
 
-        // Ensure data is flushed to disk
-        fileChannel.force(false);          // Good for durability But: This will slow down writes heavily
+        // Add to index!
+        index.put(offset, writePosition);
 
-        return offset;                             // message ID(After submit a form, system gives us a receipt number)
+//        fileChannel.force(false);         // commenting this code, take 5 to 10 minutes to finish
+        return offset;
     }                                              // the exact position (ID) of the message in the log
 
     /**
-     * Reads all messages sequentially from the log file.
+     * Fetches a batch of messages starting from a specific offset.
+     *
+     * @param startingOffset The offset to start reading from.
+     * @param maxMessages The maximum number of messages to return.
+     * @return A list of valid messages.
      */
-    public void readAll() throws IOException {
+    /**
+     * Fetches a batch of messages starting from a specific offset.
+     * Uses positional reads to ensure thread safety with concurrent writers.
+     */
+    public List<Message> read(long startingOffset, int maxMessages) throws IOException {
+        List<Message> messages = new ArrayList<>();
 
-        fileChannel.position(0);           // Go to beginning i.e. Start reading from beginning of file
+        Map.Entry<Long, Long> entry = index.ceilingEntry(startingOffset);
+        if (entry == null) {
+            return messages;
+        }
 
-        // Create header buffer
-        ByteBuffer headerBuffer = ByteBuffer.allocate(HEADER_SIZE); // offset + size + crc(offset (8) + size (4) + crc (4) = 16 bytes)
+        // Keep track of our local read position instead of moving the global file pointer
+        long currentReadPosition = entry.getValue();
+        ByteBuffer headerBuffer = ByteBuffer.allocate(HEADER_SIZE);
 
-        while (true) {                     // Keep reading until file ends
-            headerBuffer.clear();         // resets buffer -> position = 0, limit = capacity (Buffer is empty now, ready for new data)
+        for (int i = 0; i < maxMessages; i++) {
+            headerBuffer.clear();
 
-            int bytesRead = fileChannel.read(headerBuffer);    // Read header (16 bytes)
+            // THREAD-SAFE POSITIONAL READ
+            int bytesRead = fileChannel.read(headerBuffer, currentReadPosition);
+            if (bytesRead < HEADER_SIZE) break; // EOF
 
-            if (bytesRead < HEADER_SIZE) {                              // If less than 16 → stop (end of file)
-                break; // end of file
-            }
+            currentReadPosition += HEADER_SIZE; // Advance local pointer
+            headerBuffer.flip();
 
-            headerBuffer.flip();                              // switch to read mode
-
-            // Extract fields(header)
             long offset = headerBuffer.getLong();
             int size = headerBuffer.getInt();
             int crc = headerBuffer.getInt();
 
-            // Read payload
             ByteBuffer payloadBuffer = ByteBuffer.allocate(size);
-
             int totalRead = 0;
+
             while (payloadBuffer.hasRemaining()) {
-                int read = fileChannel.read(payloadBuffer);
+                // THREAD-SAFE POSITIONAL READ
+                int read = fileChannel.read(payloadBuffer, currentReadPosition);
                 if (read <= 0) break;
                 totalRead += read;
+                currentReadPosition += read; // Advance local pointer
             }
 
-            // If payload not fully read → corrupted entry
-            if (totalRead < size) {
-                System.out.println("Detected partial/corrupt message. Stopping read.");
-                break;
-            }
+            if (totalRead < size) break; // Corrupt/Partial
 
-            payloadBuffer.flip();                       // flip → read mode i.e. switch from writing to reading
+            payloadBuffer.flip();
 
-            // Validate CRC directly
             CRC32 crc32 = new CRC32();
             crc32.update(payloadBuffer.array());
-            int computedCrc = (int) crc32.getValue();
-
-            if (crc != computedCrc) {
+            if (crc != (int) crc32.getValue()) {
                 System.out.println("Corrupt message detected. Stopping read.");
                 break;
             }
 
-            // Construct message directly
-            Message message = new Message(offset, payloadBuffer.array());
-
-            System.out.println("Offset: " + message.getOffset() +
-                    ", Payload: " + new String(message.getPayload(), StandardCharsets.UTF_8));
+            messages.add(new Message(offset, payloadBuffer.array()));
         }
+
+        return messages;
     }
 
     private long recoverNextOffset() throws IOException {
         if (fileChannel.size() == 0) return 0;
 
-        // Simple approach: scan from beginning (OK for now)
         fileChannel.position(0);
-
         long lastOffset = -1;
-
         ByteBuffer header = ByteBuffer.allocate(HEADER_SIZE);
 
         while (true) {
+            long currentPosition = fileChannel.position(); // Capture position BEFORE reading
+
             header.clear();
             int read = fileChannel.read(header);
-
             if (read < HEADER_SIZE) break;
 
             header.flip();
-
             long offset = header.getLong();
             int size = header.getInt();
             header.getInt(); // skip CRC
 
-            fileChannel.position(fileChannel.position() + size);
+            // Populate the index!
+            index.put(offset, currentPosition);
 
+            fileChannel.position(fileChannel.position() + size); // Skip payload
             lastOffset = offset;
         }
 
