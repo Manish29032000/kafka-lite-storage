@@ -11,9 +11,10 @@ This project is being built in 4 phases over 8 weeks:
     - Built an in-memory index (`ConcurrentSkipListMap`) for `O(log N)` offset lookups.
     - Optimized for zero-allocation sequential reads and thread-safe positional writes.
     - *Benchmark: Reached 55+ MB/s (214k+ msgs/sec) single-threaded write throughput.*
-- [ ] **Phase 2: The Network & Transport Layer**
-    - Expose Produce/Fetch internal APIs.
-    - Implement raw Netty TCP server with Zero-Copy (`transferTo`) reads.
+- [ ] **Phase 2: The Network & Transport Layer (In Progress)**
+    - [x] Expose Produce/Fetch internal APIs via Java HTTP Server.
+    - [x] Validated thread-safety and concurrency handling (successfully resolved 500 concurrent POST requests across 50 threads with zero race conditions or dropped messages).
+    - [ ] Implement raw Netty TCP server with Zero-Copy (`transferTo`) reads.
 - [ ] **Phase 3: Coordination & State**
     - Static consumer groups and partition assignment.
     - Offset management via internal `__consumer_offsets` topic.
@@ -24,5 +25,5 @@ This project is being built in 4 phases over 8 weeks:
 ## 🚀 Tech Stack
 * **Language:** Java 21
 * **Storage:** Java NIO, Memory-Mapped Files
-* **Network:** (Upcoming) Java Netty
+* **Network:** HTTP (Transitioning to Java Netty)
 * **Data Integrity:** CRC32 Checksums
