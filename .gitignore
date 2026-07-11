@@ -36,3 +36,9 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+### Application Data ###
+# Ignore all log segments and index files
+data/
+*.log
+*.index
