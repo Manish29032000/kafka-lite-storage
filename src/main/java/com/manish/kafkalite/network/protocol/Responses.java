@@ -1,11 +1,15 @@
 package com.manish.kafkalite.network.protocol;
 
 public class Responses {
-    // 1. Add this marker interface
     public interface Response {}
 
-    // 2. Add 'implements Response' to both records
     public record ProduceResponse(long assignedOffset) implements Response {}
 
     public record FetchHeader(int payloadLength) implements Response {}
+
+    // Sent back after a successful OffsetCommit
+    public record OffsetCommitResponse(boolean success) implements Response {}
+
+    // Sent back to tell the consumer where to start
+    public record OffsetFetchResponse(long offset) implements Response {}
 }

@@ -1,5 +1,6 @@
 package com.manish.kafkalite.network;
 
+import com.manish.kafkalite.coordination.ConsumerCoordinator;
 import com.manish.kafkalite.network.protocol.KafkaLiteDecoder;
 import com.manish.kafkalite.network.protocol.KafkaLiteEncoder;
 import com.manish.kafkalite.storage.LogSegment;
@@ -16,16 +17,18 @@ public class NettyBrokerServer {
 
     private final int port;
     private final LogSegment logSegment;
+    private final ConsumerCoordinator coordinator;
 
-    public NettyBrokerServer(int port, String logFilePath) throws Exception {
+    public NettyBrokerServer(int port, String logFilePath, String offsetLogPath) throws Exception {
         this.port = port;
         this.logSegment = new LogSegment(logFilePath);
+
+        // Instantiate the coordinator pointing to our hidden offset log
+        this.coordinator = new ConsumerCoordinator(offsetLogPath);
     }
 
     public void start() throws InterruptedException {
-        // Boss thread accepts incoming TCP connections
         EventLoopGroup bossGroup = new NioEventLoopGroup(1);
-        // Worker threads handle the actual I/O (reading bytes, hitting disk)
         EventLoopGroup workerGroup = new NioEventLoopGroup();
 
         try {
@@ -35,20 +38,18 @@ public class NettyBrokerServer {
                     .childHandler(new ChannelInitializer<SocketChannel>() {
                         @Override
                         public void initChannel(SocketChannel ch) {
-                            // THIS IS YOUR PIPELINE
                             ch.pipeline().addLast(new KafkaLiteDecoder());
                             ch.pipeline().addLast(new KafkaLiteEncoder());
-                            ch.pipeline().addLast(new KafkaLiteServerHandler(logSegment));
+                            // Pass BOTH the log and the coordinator to the handler
+                            ch.pipeline().addLast(new KafkaLiteServerHandler(logSegment, coordinator));
                         }
                     })
-                    .option(ChannelOption.SO_BACKLOG, 128)          // Max queued connections
-                    .childOption(ChannelOption.SO_KEEPALIVE, true); // Keep idle connections open
+                    .option(ChannelOption.SO_BACKLOG, 128)
+                    .childOption(ChannelOption.SO_KEEPALIVE, true);
 
-            // Bind and start to accept incoming connections.
             ChannelFuture f = b.bind(port).sync();
             System.out.println("🚀 Kafka-Lite Netty Broker listening on TCP port " + port);
 
-            // Wait until the server socket is closed.
             f.channel().closeFuture().sync();
         } finally {
             workerGroup.shutdownGracefully();
@@ -62,7 +63,12 @@ public class NettyBrokerServer {
     }
 
     public static void main(String[] args) throws Exception {
-        NettyBrokerServer server = new NettyBrokerServer(9092, "data/netty-partition.log");
+        // We now pass two files: one for data, one for consumer offsets
+        NettyBrokerServer server = new NettyBrokerServer(
+                9092,
+                "data/netty-partition.log",
+                "data/__consumer_offsets.log"
+        );
         server.start();
     }
 }

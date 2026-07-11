@@ -11,51 +11,92 @@ public class NettyConsumerClient {
         String host = "localhost";
         int port = 9092;
 
+        // Define our Consumer Group
+        String groupId = "payments-service";
+        byte[] groupBytes = groupId.getBytes(StandardCharsets.UTF_8);
+
         try (Socket socket = new Socket(host, port);
              DataOutputStream out = new DataOutputStream(socket.getOutputStream());
              DataInputStream in = new DataInputStream(socket.getInputStream())) {
 
-            System.out.println("🔌 Connected to Kafka-Lite Netty Broker at " + host + ":" + port);
+            System.out.println("🔌 Connected to Kafka-Lite Broker as group: [" + groupId + "]");
 
-            // 1. ENCODE & SEND THE FETCH REQUEST (Starting at Offset 0)
-            long fetchOffset = 0;
-            System.out.println("Sending Fetch Request for offset: " + fetchOffset);
-            out.writeShort(2);              // API Key: 2 (Fetch)
-            out.writeInt(8);                // Payload Length (8 bytes for a long)
-            out.writeLong(fetchOffset);     // The requested offset
+            // ==========================================
+            // STEP 1: OFFSET FETCH (Where did I leave off?)
+            // ==========================================
+            System.out.println("\n[Step 1] Fetching saved offset for group...");
+            out.writeShort(4); // API Key 4 (Offset Fetch)
+            out.writeInt(2 + groupBytes.length); // Payload length (short + bytes)
+            out.writeShort(groupBytes.length);
+            out.write(groupBytes);
             out.flush();
 
-            // 2. READ THE HEADER (Sent by the JVM)
-            short responseApiKey = in.readShort();
-            int responseLength = in.readInt();
+            short fetchResApiKey = in.readShort();
+            int fetchResLen = in.readInt();
+            long startingOffset = in.readLong();
+            System.out.println("✅ Broker says we should start at offset: " + startingOffset);
 
-            System.out.println("✅ Received Fetch Response Header:");
-            System.out.println("   - API Key: " + responseApiKey);
-            System.out.println("   - Payload Length: " + responseLength + " bytes");
 
-            if (responseLength == 0) {
-                System.out.println("No messages found at this offset.");
-                return;
+            // ==========================================
+            // STEP 2: FETCH MESSAGES (Read Zero-Copy Stream)
+            // ==========================================
+            System.out.println("\n[Step 2] Requesting messages starting at offset: " + startingOffset);
+            out.writeShort(2); // API Key 2 (Fetch)
+            out.writeInt(8);   // Payload Length (8 bytes for a long)
+            out.writeLong(startingOffset);
+            out.flush();
+
+            short msgResApiKey = in.readShort();
+            int msgResLen = in.readInt();
+
+            long lastReadOffset = -1;
+
+            if (msgResLen == 0) {
+                System.out.println("   No new messages found at this time.");
+            } else {
+                System.out.println("📥 Decoding Zero-Copy Stream:");
+                int bytesRead = 0;
+
+                while (bytesRead < msgResLen) {
+                    long msgOffset = in.readLong();
+                    int msgLength = in.readInt();
+                    int crc = in.readInt();
+
+                    byte[] payload = new byte[msgLength];
+                    in.readFully(payload);
+
+                    String messageStr = new String(payload, StandardCharsets.UTF_8);
+                    System.out.printf("   -> [Offset: %d] %s\n", msgOffset, messageStr);
+
+                    lastReadOffset = msgOffset; // Keep track of the highest offset we processed
+                    bytesRead += (16 + msgLength);
+                }
             }
 
-            // 3. READ THE ZERO-COPY RAW BYTES (Sent by the OS)
-            System.out.println("\n📥 Decoding Zero-Copy Stream:");
-            int bytesRead = 0;
 
-            while (bytesRead < responseLength) {
-                long msgOffset = in.readLong();
-                int msgLength = in.readInt();
-                int crc = in.readInt();
+            // ==========================================
+            // STEP 3: OFFSET COMMIT (Save our progress)
+            // ==========================================
+            if (lastReadOffset != -1) {
+                // We commit the NEXT offset we want to read, so we don't re-read the last one
+                long nextOffsetToCommit = lastReadOffset + 1;
+                System.out.println("\n[Step 3] Committing new offset: " + nextOffsetToCommit);
 
-                // Read the exact payload length
-                byte[] payload = new byte[msgLength];
-                in.readFully(payload);
+                out.writeShort(3); // API Key 3 (Offset Commit)
+                // Payload length = string short (2) + string bytes (N) + long (8)
+                out.writeInt(2 + groupBytes.length + 8);
+                out.writeShort(groupBytes.length);
+                out.write(groupBytes);
+                out.writeLong(nextOffsetToCommit);
+                out.flush();
 
-                String messageStr = new String(payload, StandardCharsets.UTF_8);
-                System.out.printf("   -> [Offset: %d] %s\n", msgOffset, messageStr);
+                short commitResApiKey = in.readShort();
+                int commitResLen = in.readInt();
+                boolean success = in.readBoolean();
 
-                // Track bytes read: 8 (offset) + 4 (length) + 4 (crc) + payload size
-                bytesRead += (16 + msgLength);
+                System.out.println("✅ Offset Commit Status: " + (success ? "SUCCESS" : "FAILED"));
+            } else {
+                System.out.println("\n[Step 3] No new messages read, skipping offset commit.");
             }
 
         } catch (Exception e) {

@@ -15,12 +15,13 @@ This project is being built in 4 phases over 8 weeks:
     - Built a custom Length-Prefixed Binary TCP Protocol.
     - Implemented a high-performance async Netty server (Boss/Worker EventLoops).
     - Achieved **Zero-Copy Reads** bypassing the JVM heap via OS-level `sendfile` (`FileChannel.transferTo()`).
-- [ ] **Phase 3: Coordination & State (In Progress)**
-    - Static consumer groups and partition assignment.
-    - Offset management via internal `__consumer_offsets` topic.
-- [ ] **Phase 4: Hardening & Presentation**
-    - Single-writer concurrency model.
-    - Crash recovery and Dockerization.
+- [x] **Phase 3: Coordination & State**
+    - Implemented `ConsumerCoordinator` for O(1) offset lookups.
+    - Built internal `__consumer_offsets` log for durable state tracking across broker crashes.
+    - Stateful consumer clients capable of resuming from their last checkpoint.
+- [ ] **Phase 4: Hardening & Presentation (In Progress)**
+    - Packaging and Dockerization.
+    - Architecture diagrams and final documentation.
 
 ## 🚀 Tech Stack
 * **Language:** Java 21
